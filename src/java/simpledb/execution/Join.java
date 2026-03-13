@@ -1,11 +1,11 @@
 package simpledb.execution;
 
-import simpledb.transaction.TransactionAbortedException;
 import simpledb.common.DbException;
 import simpledb.storage.Tuple;
 import simpledb.storage.TupleDesc;
+import simpledb.transaction.TransactionAbortedException;
 
-import java.util.*;
+import java.util.NoSuchElementException;
 
 /**
  * The Join operator implements the relational join operation.
@@ -14,66 +14,77 @@ public class Join extends Operator {
 
     private static final long serialVersionUID = 1L;
 
+    private final JoinPredicate p;
+    private OpIterator child1;
+    private OpIterator child2;
+    private Tuple currentT1; // 用于保存左表当前的游标记录
+
     /**
      * Constructor. Accepts two children to join and the predicate to join them
      * on
-     * 
-     * @param p
-     *            The predicate to use to join the children
+     * * @param p
+     * The predicate to use to join the children
      * @param child1
-     *            Iterator for the left(outer) relation to join
+     * Iterator for the left(outer) relation to join
      * @param child2
-     *            Iterator for the right(inner) relation to join
+     * Iterator for the right(inner) relation to join
      */
     public Join(JoinPredicate p, OpIterator child1, OpIterator child2) {
-        // some code goes here
+        this.p = p;
+        this.child1 = child1;
+        this.child2 = child2;
+        this.currentT1 = null;
     }
 
     public JoinPredicate getJoinPredicate() {
-        // some code goes here
-        return null;
+        return this.p;
     }
 
     /**
      * @return
-     *       the field name of join field1. Should be quantified by
-     *       alias or table name.
+     * the field name of join field1. Should be quantified by
+     * alias or table name.
      * */
     public String getJoinField1Name() {
-        // some code goes here
-        return null;
+        return child1.getTupleDesc().getFieldName(p.getField1());
     }
 
     /**
      * @return
-     *       the field name of join field2. Should be quantified by
-     *       alias or table name.
+     * the field name of join field2. Should be quantified by
+     * alias or table name.
      * */
     public String getJoinField2Name() {
-        // some code goes here
-        return null;
+        return child2.getTupleDesc().getFieldName(p.getField2());
     }
 
     /**
      * @see TupleDesc#merge(TupleDesc, TupleDesc) for possible
-     *      implementation logic.
+     * implementation logic.
      */
     public TupleDesc getTupleDesc() {
-        // some code goes here
-        return null;
+        return TupleDesc.merge(child1.getTupleDesc(), child2.getTupleDesc());
     }
 
     public void open() throws DbException, NoSuchElementException,
             TransactionAbortedException {
-        // some code goes here
+        child1.open();
+        child2.open();
+        super.open();
+        currentT1 = null;
     }
 
     public void close() {
-        // some code goes here
+        super.close();
+        child2.close();
+        child1.close();
+        currentT1 = null;
     }
 
     public void rewind() throws DbException, TransactionAbortedException {
-        // some code goes here
+        child1.rewind();
+        child2.rewind();
+        currentT1 = null;
     }
 
     /**
@@ -81,33 +92,54 @@ public class Join extends Operator {
      * more tuples. Logically, this is the next tuple in r1 cross r2 that
      * satisfies the join predicate. There are many possible implementations;
      * the simplest is a nested loops join.
-     * <p>
-     * Note that the tuples returned from this particular implementation of Join
-     * are simply the concatenation of joining tuples from the left and right
-     * relation. Therefore, if an equality predicate is used there will be two
-     * copies of the join attribute in the results. (Removing such duplicate
-     * columns can be done with an additional projection operator if needed.)
-     * <p>
-     * For example, if one tuple is {1,2,3} and the other tuple is {1,5,6},
-     * joined on equality of the first column, then this returns {1,2,3,1,5,6}.
-     * 
-     * @return The next matching tuple.
-     * @see JoinPredicate#filter
      */
     protected Tuple fetchNext() throws TransactionAbortedException, DbException {
-        // some code goes here
+        // Nested Loops Join 逻辑实现
+        while (child1.hasNext() || currentT1 != null) {
+            // 如果 currentT1 为空，说明需要从外表抓取新的一行
+            if (currentT1 == null) {
+                currentT1 = child1.next();
+            }
+
+            // 遍历内表
+            while (child2.hasNext()) {
+                Tuple t2 = child2.next();
+
+                // 如果满足连接条件，合并 Tuple 并返回
+                if (p.filter(currentT1, t2)) {
+                    TupleDesc mergedTd = getTupleDesc();
+                    Tuple mergedTuple = new Tuple(mergedTd);
+                    mergedTuple.setRecordId(currentT1.getRecordId()); // 可选设置
+
+                    int i = 0;
+                    for (int j = 0; j < currentT1.getTupleDesc().numFields(); j++) {
+                        mergedTuple.setField(i++, currentT1.getField(j));
+                    }
+                    for (int j = 0; j < t2.getTupleDesc().numFields(); j++) {
+                        mergedTuple.setField(i++, t2.getField(j));
+                    }
+                    return mergedTuple;
+                }
+            }
+
+            // 当前的 currentT1 已经与整个右表比较完了，将 currentT1 置空并重置右表
+            currentT1 = null;
+            child2.rewind();
+        }
+
         return null;
     }
 
     @Override
     public OpIterator[] getChildren() {
-        // some code goes here
-        return null;
+        return new OpIterator[] { this.child1, this.child2 };
     }
 
     @Override
     public void setChildren(OpIterator[] children) {
-        // some code goes here
+        if (children != null && children.length >= 2) {
+            this.child1 = children[0];
+            this.child2 = children[1];
+        }
     }
-
 }
