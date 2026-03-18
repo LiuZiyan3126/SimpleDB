@@ -16,11 +16,16 @@ public class IntHistogram {
      * Create a new IntHistogram.
      */
     public IntHistogram(int buckets, int min, int max) {
-        this.buckets = new int[buckets];
         this.min = min;
         this.max = max;
-        // 计算每个桶的跨度宽度 (w)。注意总范围需要 +1 才是实际跨度
-        this.width = (double) (max - min + 1) / buckets;
+
+        // 核心修复点：限制最大桶数为实际可能的不重复值个数 (distinct values)
+        // 这样可以保证算出来的桶宽 (width) 永远 >= 1.0
+        int distinctVals = max - min + 1;
+        int actualBuckets = Math.min(buckets, distinctVals);
+
+        this.buckets = new int[actualBuckets];
+        this.width = (double) distinctVals / actualBuckets;
         this.ntups = 0;
     }
 
@@ -105,12 +110,10 @@ public class IntHistogram {
             return sel;
         }
 
-        // 修改点：老老实实地拆分成 等于 + 大于，并限制最大值为 1.0
         if (op == Predicate.Op.GREATER_THAN_OR_EQ) {
             return Math.min(1.0, estimateSelectivity(Predicate.Op.EQUALS, v) + estimateSelectivity(Predicate.Op.GREATER_THAN, v));
         }
 
-        // 修改点：老老实实地拆分成 等于 + 小于，并限制最大值为 1.0
         if (op == Predicate.Op.LESS_THAN_OR_EQ) {
             return Math.min(1.0, estimateSelectivity(Predicate.Op.EQUALS, v) + estimateSelectivity(Predicate.Op.LESS_THAN, v));
         }
