@@ -11,62 +11,33 @@ import java.util.*;
 
 /**
  * HeapFile is an implementation of a DbFile that stores a collection of tuples
- * in no particular order. Tuples are stored on pages, each of which is a fixed
- * size, and the file is simply a collection of those pages. HeapFile works
- * closely with HeapPage. The format of HeapPages is described in the HeapPage
- * constructor.
- * * @see HeapPage#HeapPage
- * @author Sam Madden
+ * in no particular order.
  */
 public class HeapFile implements DbFile {
 
     private final File file;
     private final TupleDesc td;
 
-    /**
-     * Constructs a heap file backed by the specified file.
-     * * @param f
-     * the file that stores the on-disk backing store for this heap
-     * file.
-     */
     public HeapFile(File f, TupleDesc td) {
         this.file = f;
         this.td = td;
     }
 
-    /**
-     * Returns the File backing this HeapFile on disk.
-     * * @return the File backing this HeapFile on disk.
-     */
     public File getFile() {
         return this.file;
     }
 
-    /**
-     * Returns an ID uniquely identifying this HeapFile. Implementation note:
-     * you will need to generate this tableid somewhere to ensure that each
-     * HeapFile has a "unique id," and that you always return the same value for
-     * a particular HeapFile. We suggest hashing the absolute file name of the
-     * file underlying the heapfile, i.e. f.getAbsoluteFile().hashCode().
-     * * @return an ID uniquely identifying this HeapFile.
-     */
     public int getId() {
         return file.getAbsoluteFile().hashCode();
     }
 
-    /**
-     * Returns the TupleDesc of the table stored in this DbFile.
-     * * @return TupleDesc of this DbFile.
-     */
     public TupleDesc getTupleDesc() {
         return this.td;
     }
 
-    // see DbFile.java for javadocs
     public Page readPage(PageId pid) {
         try {
             RandomAccessFile raf = new RandomAccessFile(file, "r");
-            // 计算偏移量：页号 * 页大小
             int offset = pid.getPageNumber() * BufferPool.getPageSize();
             byte[] data = new byte[BufferPool.getPageSize()];
 
@@ -80,44 +51,69 @@ public class HeapFile implements DbFile {
         }
     }
 
-    // see DbFile.java for javadocs
     public void writePage(Page page) throws IOException {
-        // some code goes here
-        // not necessary for lab1
+        RandomAccessFile raf = new RandomAccessFile(file, "rw");
+        int offset = page.getId().getPageNumber() * BufferPool.getPageSize();
+        raf.seek(offset);
+        raf.write(page.getPageData());
+        raf.close();
     }
 
-    /**
-     * Returns the number of pages in this HeapFile.
-     */
     public int numPages() {
-        // 文件总大小 / 页面大小
         return (int) (file.length() / BufferPool.getPageSize());
     }
 
-    // see DbFile.java for javadocs
     public List<Page> insertTuple(TransactionId tid, Tuple t)
             throws DbException, IOException, TransactionAbortedException {
-        // some code goes here
-        return null;
-        // not necessary for lab1
+        ArrayList<Page> modifiedPages = new ArrayList<>();
+        int i = 0;
+
+        // 1. 尝试在现有的页中寻找有空槽的页
+        for (; i < numPages(); i++) {
+            HeapPageId pid = new HeapPageId(getId(), i);
+            HeapPage page = (HeapPage) Database.getBufferPool().getPage(tid, pid, Permissions.READ_WRITE);
+            if (page.getNumEmptySlots() > 0) {
+                page.insertTuple(t);
+                modifiedPages.add(page);
+                return modifiedPages;
+            }
+        }
+
+        // 2. 如果现有的所有页都满了，创建一个新页，追加到文件末尾
+        HeapPageId newPid = new HeapPageId(getId(), i);
+        HeapPage newPage = new HeapPage(newPid, HeapPage.createEmptyPageData());
+        writePage(newPage); // 必须先写到磁盘，让 BufferPool 能读到
+
+        // 3. 再次通过 BufferPool 获取这页，从而走正常的缓冲控制流程
+        HeapPage page = (HeapPage) Database.getBufferPool().getPage(tid, newPid, Permissions.READ_WRITE);
+        page.insertTuple(t);
+        modifiedPages.add(page);
+
+        return modifiedPages;
     }
 
-    // see DbFile.java for javadocs
     public ArrayList<Page> deleteTuple(TransactionId tid, Tuple t) throws DbException,
             TransactionAbortedException {
-        // some code goes here
-        return null;
-        // not necessary for lab1
+        ArrayList<Page> modifiedPages = new ArrayList<>();
+        RecordId rid = t.getRecordId();
+
+        // 校验所属文件
+        if (rid == null || rid.getPageId().getTableId() != getId()) {
+            throw new DbException("Tuple does not belong to this HeapFile");
+        }
+
+        // 通过 BufferPool 获取页面并执行删除
+        HeapPage page = (HeapPage) Database.getBufferPool().getPage(tid, rid.getPageId(), Permissions.READ_WRITE);
+        page.deleteTuple(t);
+        modifiedPages.add(page);
+
+        return modifiedPages;
     }
 
-    // see DbFile.java for javadocs
     public DbFileIterator iterator(TransactionId tid) {
         return new HeapFileIterator(this, tid);
     }
 
-    /**
-     * Helper class to implement the DbFileIterator for HeapFile.
-     */
     private static class HeapFileIterator implements DbFileIterator {
         private final HeapFile heapFile;
         private final TransactionId tid;
@@ -138,13 +134,11 @@ public class HeapFile implements DbFile {
             tupleIterator = getPageTuples(currentPageNo);
         }
 
-        // 核心难点：跨页获取 Tuple，必须通过 BufferPool 获取 Page
         private Iterator<Tuple> getPageTuples(int pageNo) throws TransactionAbortedException, DbException {
             if (pageNo >= heapFile.numPages()) {
                 return null;
             }
             HeapPageId pid = new HeapPageId(heapFile.getId(), pageNo);
-            // 必须使用 Database.getBufferPool().getPage()，这是并发控制和缓存的关键
             HeapPage page = (HeapPage) Database.getBufferPool().getPage(tid, pid, Permissions.READ_ONLY);
             return page.iterator();
         }
@@ -153,12 +147,10 @@ public class HeapFile implements DbFile {
         public boolean hasNext() throws DbException, TransactionAbortedException {
             if (!isOpen) return false;
 
-            // 当前页的迭代器没遍历完，直接返回 true
             if (tupleIterator != null && tupleIterator.hasNext()) {
                 return true;
             }
 
-            // 当前页遍历完了，尝试去下一页找，直到找到有 Tuple 的页或者遍历完所有页
             while (currentPageNo < heapFile.numPages() - 1) {
                 currentPageNo++;
                 tupleIterator = getPageTuples(currentPageNo);
